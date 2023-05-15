@@ -1,0 +1,57 @@
+`timescale 1ns / 1ps
+`include "divide.v"
+
+module divide_wrap(clock, a, b, quo);
+	localparam SF = 2.0**4;
+	localparam SF_d = 2.0**-4;
+	localparam SF10_d = 2.0**-10;
+	localparam CLK_PERIOD = 10;
+	localparam WIDTH = 16;
+
+	// Inputs
+	reg rst;
+	reg start;
+	input clock;
+	input signed [WIDTH-1:0] a;
+	input signed [WIDTH-1:0] b;
+
+	// Outputs
+	wire busy;
+	wire done;
+	wire valid;
+	wire dbz;
+	wire ovf;
+	wire signed [WIDTH-1:0] val;
+	output reg signed [WIDTH-1:0] quo;
+
+	// Instantiate the Unit Under Test (UUT)
+	divu uut (
+		.clk(clock),
+		.rst(rst), 
+		.start(start), 
+		.busy(busy), 
+		.done(done), 
+		.valid(valid), 
+		.dbz(dbz), 
+		.ovf(ovf), 
+		.a(a), 
+		.b(b),
+		.val(val)
+	);
+	
+	always @(a, b) begin
+		$display("%0d: Num: %0f Den: %0f", $time, $itor(a*SF_d*SF10_d), $itor(b*SF_d*SF10_d));
+		start = 1;
+		#11 start = 0;
+	end
+	
+	 always @(valid) begin
+		 if (valid == 1) begin
+			 $display("%0d: Quotient calculated: %0d(%0f)", $time, val, $itor(val * SF_d *SF_d));
+			 quo = val;
+			 //$display("%0d, %0d, %0d, %0d, %0d", busy, done, valid, dbz, ovf);
+			 rst = 1;
+			 #11 rst = 0;
+		 end
+	 end
+endmodule

@@ -1,0 +1,830 @@
+`timescale 1ns / 1ps
+`include "sinuse.v"
+`include "sqrt_wrap.v"
+`include "divide_wrap.v"
+
+// Company: IIT Dhanbad
+// Sudents: Harshit and Upashna
+// 
+// Create Date:    08:13:24 02/24/2023 
+// Design Name: 		
+// Module Name:    experiments 
+// Project Name: 	Final year project
+
+// Remaining work:
+// 1. Check for dimensions of matrices and optimize the loops for that
+
+module experiments;
+	// Integers
+	integer i, j, k, l, lambda;
+	
+	// Parameters
+	parameter WIDTH = 16, FBITS = 8, N = 4, M = 4, p = 3;
+	parameter lWIDTH = 31;
+	parameter clock_period = 10; // 100MHZ - 10ns
+	
+	// Multidimensional arrays
+	reg signed [lWIDTH:0] wn_r[0:N-1][0:M-1], wn_i[0:N-1][0:M-1]; // DFT matrix
+	reg signed [lWIDTH:0] A_r[0:N*M-1][0:N*M-1], A_i[0:N*M-1][0:N*M-1]; // Symbol matrix
+	reg signed eye_M[0:M-1][0:M-1]; // Identity matrix
+	
+	// Matrices required till HH matrix generation
+	reg signed [lWIDTH:0] hp_r[0:p-1], hp_i[0:p-1], hs_r[0:p-1], hs_i[0:p-1],
+							H_r[0:M*N-1][0:N*M-1], H_i[0:M*N-1][0:N*M-1],
+							H_r_r[0:M*N-1][0:N*M-1], H_r_i[0:M*N-1][0:N*M-1],
+							h_r[0:M*N-1][0:N*M-1], h_i[0:M*N-1][0:N*M-1],
+							HH_r[0:M*N-1][0:N*M-1], HH_i[0:M*N-1][0:N*M-1];
+	
+	// An accumulator matrix for matrix multiplications
+	reg signed [lWIDTH:0] accum_r[0:M*N-1][0:N*M-1], accum_i[0:M*N-1][0:N*M-1];
+	
+	reg signed [lWIDTH:0] cpi[0:M*N-1][0:N*M-1], cpr[0:M*N-1][0:N*M-1];
+	
+	reg signed [lWIDTH:0] delta_r_r[0:M*N-1][0:N*M-1], delta_r_i[0:M*N-1][0:N*M-1],
+							delta_r[0:M*N-1][0:N*M-1], delta_i[0:M*N-1][0:N*M-1];
+	
+	// Matrices used in LU Decomposition
+	reg signed [lWIDTH:0] T_r[0:M*N-1][0:N*M-1], T_i[0:M*N-1][0:N*M-1],
+							B_r[0:M*N-1][0:N*M-1], B_i[0:M*N-1][0:N*M-1],
+							S_r[0:M*N-1][0:N*M-1], S_i[0:M*N-1][0:N*M-1],
+							C_r[0:M*N-1][0:N*M-1], C_i[0:M*N-1][0:N*M-1],
+							V_r[0:M*N-1][0:N*M-1], V_i[0:M*N-1][0:N*M-1],
+							U_r[0:M*N-1][0:N*M-1], U_i[0:M*N-1][0:N*M-1];
+							
+	reg signed [lWIDTH:0] S_herm_r[0:M*N-1][0:N*M-1], S_herm_i[0:M*N-1][0:N*M-1],
+							U_herm_r[0:M*N-1][0:N*M-1], U_herm_i[0:M*N-1][0:N*M-1],
+							V_herm_r[0:M*N-1][0:N*M-1], V_herm_i[0:M*N-1][0:N*M-1];
+							
+	reg signed [lWIDTH:0] LT_r[0:M*N-1][0:M*N-1], LT_i[0:M*N-1][0:M*N-1],
+							UT_r[0:M*N-1][0:M*N-1], UT_i[0:M*N-1][0:M*N-1],
+							UTT_r[0:M*N-1][0:M*N-1], UTT_i[0:M*N-1][0:M*N-1];
+	
+	reg signed [lWIDTH:0] E_r[0:M*N-1][0:M*N-1], E_i[0:M*N-1][0:M*N-1];
+	
+	// Normal registers
+	reg signed [lWIDTH:0] angle;
+	reg signed [lWIDTH:0] deg;
+	reg signed [63:0] calc, tmp, tmp2;
+	reg signed [lWIDTH:0] cos;
+	reg signed [lWIDTH:0] sin;
+	reg signed [lWIDTH:0] kp, lp, ip, ks, ls, is, kss, lss, alpha, theta, Q, kd, Tl, s;
+	reg signed [lWIDTH:0] sum_r, sum_i, kk, quo_r, quo_i;
+	reg signed [lWIDTH:0] B_row, B_col, S_row, S_col, C_row, C_col;
+	reg [WIDTH-1:0] rad;   // radicand
+	reg [WIDTH-1:0] num, den; // num, den
+	
+	// Clock
+	reg clock;
+	
+	// Wires
+	wire signed [16:0] Xout;
+	wire signed [16:0] Yout;
+	wire [WIDTH-1:0] root;  // root
+	wire signed [WIDTH-1:0] quo; // quotient
+	
+	// Localparams
+	localparam SF_4 = 2.0**4;
+	localparam SF_8 = SF_4*SF_4;
+	localparam SF_4d = 2.0**-4;
+	localparam SF_8d = SF_4d*SF_4d;
+	localparam SF_10 = 2.0**10;
+	localparam SF_10d = 2.0**-10;
+	
+	// Instantiating the modules
+	sine_cosine sinuse(
+		.clock(clock),
+		.angle(angle),
+		.Xout(Xout),
+		.Yout(Yout)
+	);
+	sqrt_wrap sqrt_wrap(
+		.clock(clock),
+		.radicand(rad),
+		.ans(root)
+	);
+	divide_wrap divide_wrap(
+		.clock(clock),
+		.a(num),
+		.b(den),
+		.quo(quo)
+	);
+	
+	// Clock generation
+	initial
+	begin
+	  clock = 1'b0;
+	  $display ("clock started");
+	  #5;
+	  forever
+	  begin
+		 #(clock_period/2) clock = 1'b1;
+		 #(clock_period/2) clock = 1'b0;
+	  end
+	end
+	
+	// Multiplies the complex matrix with a scalar complex number
+	
+	function complex_multiplication(input reg[31:0] re, input reg[31:0] im);
+		integer a, b;
+		for (a = 0; a< N*M; a=a+1) begin
+			for (b = 0; b < N*M; b = b+1) begin
+				tmp = accum_r[a][b];
+				
+				accum_r[a][b] = accum_r[a][b] * re - accum_i[a][b] * im;
+				accum_i[a][b] = tmp * im + accum_i[a][b] * re;
+			end
+		end
+	endfunction
+	
+	function complex_divison_r(input reg signed[31:0] a, input reg signed[31:0] b, 
+							input reg signed[31:0] c, input reg signed[31:0] d);
+		begin
+		/*
+			$display("a=%d(%f), b=%d(%f), c=%d(%f), d=%d(%f)", a, $itor(a*SF_10d*SF_10d*SF_4d),
+																				b, $itor(b*SF_10d*SF_10d*SF_4d),
+																				c, $itor(c*SF_10d*SF_10d*SF_4d),
+																				d, $itor(d*SF_10d*SF_10d*SF_4d));
+			*/
+			
+			tmp = ((a * SF_10d * SF_4d) * (c * SF_10d * SF_4d) + 
+						(b * SF_10d * SF_4d) * (d * SF_10d * SF_4d)); // ac + bd // scaling -> 20
+			tmp2 = ((c * SF_10d * SF_4d) * (c * SF_10d * SF_4d) + 
+						(d * SF_10d * SF_4d) * (d * SF_10d * SF_4d)); // c2 + d2 // scaling -> 20
+			
+			if (tmp != 0) begin
+				num = (tmp * SF_10d);
+				den = (tmp2 * SF_10d);
+			end
+		end
+	endfunction
+	
+	function complex_divison_i(input reg signed[31:0] a, input reg signed[31:0] b, 
+							input reg signed[31:0] c, input reg signed[31:0] d);
+		begin
+			tmp = ((b * SF_10d * SF_4d) * (c * SF_10d * SF_4d) -
+				(a * SF_10d * SF_4d) * (d * SF_10d * SF_4d)); // bc-ad // scaling -> 28
+			tmp2 = ((c * SF_10d * SF_4d) * (c * SF_10d * SF_4d) + 
+				(d * SF_10d * SF_4d) * (d * SF_10d * SF_4d)); // c2 + d2 // scaling -> 28
+			
+			if (tmp != 0) begin
+				num = tmp * SF_10d;
+				den = tmp2 * SF_10d;
+			end
+		end
+	endfunction
+	
+	initial begin
+		$display("Initialzing...");
+		
+		// In practice should be implemented in a random manner. Right now doing this for reproducibility.
+		// defining hp and hs matrices
+		hp_r[0] = 174; hp_r[1] = 593; hp_r[2] = -731; hp_r[3] = 279; hp_r[4] = 103;
+		hp_i[0] = -423; hp_i[1] = -140; hp_i[2] = 110; hp_i[3] = 1158; hp_i[4] = 896;
+		
+		for (i = 0; i< p; i= i+1) begin
+			hs_r[i] = hp_r[i];
+			hs_i[i] = -hp_i[i];
+		end
+		
+		//$display("\tlda\tdeg\tangle\tXout\tYout\tcos\tsin\treal\timg");
+		
+		// Here generating the DFT matrix
+		
+		rad = ((1 * SF_8) / N); //128 SF = +4
+		$display("Time: %d", $time);
+		
+		for (i = 0; i< M; i = i+1) begin
+			for (j = 0; j< N; j = j+1) begin
+				//$display("For loop iteration: %d,%d", i, j);
+				deg = (360 * i * j)/M;
+				while (deg > 360) begin
+				deg = deg - 360;
+				end;
+				
+				calc = ((1<<32)/360) * deg;
+				angle = calc[31:0];
+				#200				
+				cos = (Xout * SF_4)/32000; // SF = +4+4
+				sin = (Yout * SF_4)/32000;
+				
+				lambda = root; // 181 = root * SF // SF+1 (due to sqrt module nature)
+				wn_r[i][j] = (lambda * cos); // SF = +4+4+4
+				wn_i[i][j] = (lambda * sin);
+				
+				$display("Wn[%0d][%0d] = %0f + i%0f", i, j,
+					$itor(wn_r[i][j]*SF_8d*SF_4d), $itor(wn_i[i][j]*SF_8d*SF_4d));
+			end
+		end
+		
+		$display("Time: %d", $time);
+		
+		// creating identity matrix
+		for (i = 0; i< M; i=i+1) begin
+			for (j = 0; j< M; j=j+1) begin
+				if (i == j)
+					eye_M[i][j]=1;
+				else
+					eye_M[i][j]=0;
+			end
+		end
+					
+		// calculating kron prod
+		for (i = 0; i< M; i=i+1) begin
+			for (j = 0; j< N; j=j+1) begin
+				for (k = 0; k< M; k=k+1) begin
+					for (l = 0; l< M; l = l+1) begin
+						A_r[i*M+k][j*N+l] = wn_r[i][j]*eye_M[k][l];
+						A_i[i*M+k][j*N+l] = wn_i[i][j]*eye_M[k][l];
+						//$display("For loop iteration: %d,%d, Value: %f", 
+						//	i*M+k, j*N+l, $itor(A_r[i*M+k][j*N+l]*SF2_d*SF_d));
+					end
+				end
+			end
+		end
+		
+		
+		// matrices initializations
+		for (i = 0; i< M*N; i=i+1) begin
+			for (j =0; j< M*N; j=j+1) begin
+				H_r_r[i][j] = 0; H_r_i[i][j] = 0;
+				h_i[i][j] = 0; h_r[i][j] = 0;
+				H_i[i][j] = 0; H_r[i][j] = 0;
+				HH_i[i][j] = 0; HH_r[i][j] = 0;
+				T_r[i][j] = 0; T_i[i][j] = 0;
+				B_r[i][j] = 0; B_i[i][j] = 0;
+				S_r[i][j] = 0; S_i[i][j] = 0;
+				C_r[i][j] = 0; C_i[i][j] = 0;
+				E_r[i][j] = 0; E_i[i][j] = 0;
+				U_r[i][j] = 0; U_i[i][j] = 0;
+				V_r[i][j] = 0; V_i[i][j] = 0;
+				U_herm_r[i][j] = 0; U_herm_i[i][j] = 0;
+				V_herm_r[i][j] = 0; V_herm_i[i][j] = 0;
+				S_herm_r[i][j] = 0; S_herm_i[i][j] = 0;
+			end
+		end
+		
+		// HH Matrix generation
+		
+		$display("Time: %d", $time);
+		for (ip = 0; ip< p; ip=ip+1) begin
+			kp = ip+1;
+			lp = ip;
+			
+			// initialize cpr with 0
+			for (i = 0; i< M*N; i=i+1) begin
+				for (j =0; j< M*N; j=j+1) begin
+					cpr[i][j] = 0;
+					delta_r_r[i][j] = 0;
+					delta_r_i[i][j] = 0;
+				end
+			end
+			
+			for (i =0; i< M*N; i=i+1) begin
+				cpr[i][(lp+i)%(M*N)] = 1;
+			end
+			
+			// delta_r matrix generation
+			for (l = 0; l < M*N; l=l+1) begin
+				deg = (360 * (kp-1) * l) / (M * N);
+				while (deg > 360) begin
+				deg = deg - 360;
+				end
+				
+				calc = ((1<<32)/360) * deg;
+				angle = calc[31:0];
+				#200				
+				cos = (Xout * SF_4)/32000; // SF = 4
+				sin = (Yout * SF_4)/32000;
+				
+				delta_r_r[l][l] = (cos);
+				delta_r_i[l][l] = (sin);
+			end
+			
+			// matrix multiplication and stored in accum variable
+			for (i = 0; i< M*N; i=i+1) begin
+				for (j =0 ; j< M*N; j=j+1) begin
+					accum_r[i][j] = 0;
+					accum_i[i][j] = 0;
+					for (k = 0; k< M*N; k=k+1) begin
+						accum_r[i][j] = accum_r[i][j] + cpr[i][k]*delta_r_r[k][j];
+						accum_i[i][j] = accum_i[i][j] + cpr[i][k]*delta_r_i[k][j];
+					end
+				end
+			end
+			
+			complex_multiplication(hp_r[ip], hp_i[ip]);
+			
+			// H_r matrix generation
+			
+			$display("Time H: %d", $time);
+			for (i = 0; i< M*N; i= i+1) begin
+				for (j = 0; j< M*N; j = j+1) begin
+					H_r_r[i][j] = H_r_r[i][j] + accum_r[i][j];
+					H_r_i[i][j] = H_r_i[i][j] + accum_i[i][j];
+				end
+			end
+				
+			$display("Time H: %d", $time);
+			
+			// is wala loop
+			for (is = 0; is< p; is=is+1) begin
+				ks = is+1;
+				kss = kp-ks;
+				ls = is;
+				
+				if ((lp-ls) < 0) begin
+					lss = M*N+ (lp-ls);
+				end else begin
+					lss = lp-ls;
+				end
+				
+				if ((kp-ks == 0) && (lp-ls==0)) begin
+					for (i =0; i< M*N; i=i+1) begin
+						h_r[i][i] = h_r[i][i] + hp_r[ip]*hs_r[is] - hp_i[ip]*hs_i[is];
+						h_i[i][i] = h_i[i][i] + hp_i[ip]*hs_r[is] + hp_r[ip]*hs_i[is];
+					end
+				end else begin
+					// initialize cpi with 0
+					for (i = 0; i< M*N; i=i+1) begin
+						for (j =0; j< M*N; j=j+1) begin
+							cpi[i][j] = 0;
+							delta_r[i][j] = 0;
+							delta_i[i][j] = 0;
+						end
+					end
+					
+					for (i =0; i< M*N; i=i+1) begin
+						cpi[i][(lss+i)%(M*N)] = 1;
+					end
+					
+					// delta_r matrix generation
+					for (l = 0; l < M*N; l=l+1) begin
+						deg = (360 * (kss) * l) / (M * N);
+						while (deg > 360) begin
+						deg = deg - 360;
+						end;
+						
+						calc = ((1<<32)/360) * deg;
+						angle = calc[31:0];
+						#200				
+						cos = (Xout * SF_4)/32000; // SF+1
+						sin = (Yout * SF_4)/32000;
+						
+						delta_r[l][l] = (cos);
+						delta_i[l][l] = (sin);
+					end
+					
+					// matrix multiplication and stored in accum variable
+					for (i = 0; i< M*N; i=i+1) begin
+						for (j =0 ; j< M*N; j=j+1) begin
+							accum_r[i][j] = 0;
+							accum_i[i][j] = 0;
+							for (k = 0; k< M*N; k=k+1) begin
+								accum_r[i][j] = accum_r[i][j] + cpi[i][k]*delta_r[k][j];
+								accum_i[i][j] = accum_i[i][j] + cpi[i][k]*delta_i[k][j];
+							end
+						end
+					end
+					
+					complex_multiplication(hp_r[ip], hp_i[ip]);
+					complex_multiplication(hs_r[is], hs_i[is]);
+					
+					// H_r matrix generation
+					for (i = 0; i< M*N; i= i+1) begin
+						for (j = 0; j< M*N; j = j+1) begin
+							H_r[i][j] = H_r[i][j] + accum_r[i][j];
+							H_i[i][j] = H_i[i][j] + accum_i[i][j];
+						end
+					end
+				end
+			end
+		end
+		
+		for (i = 0; i< M*N; i= i+1) begin
+			for (j = 0; j< M*N; j= j+1) begin
+				HH_r[i][j] = H_r[i][j] + h_r[i][j] * SF_4;
+				HH_i[i][j] = H_i[i][j] + h_i[i][j] * SF_4;
+			end
+		end
+		
+		
+		$display("Time: %d", $time);
+		
+		
+		$display("H_r matrix: ");
+		for (i = 0; i< M*N; i= i+1) begin
+			for (j = 0; j< M*N; j= j+1) begin
+				$display("(%0d)(%0d) = %0d (%0f) + %0d (%0f)", 
+				i, j, H_r_r[i][j], $itor(H_r_r[i][j]*SF_10d*SF_4d), H_r_i[i][j], $itor(H_r_i[i][j]*SF_10d*SF_4d));
+			end
+		end
+		/*
+		$display("h matrix: ");
+		for (i = 0; i< M*N; i= i+1) begin
+			for (j = 0; j< M*N; j= j+1) begin
+				$display("(%0d)(%0d) = %0d (%0f) + %0d (%0f)", 
+				i, j, h_r[i][j], $itor(h_r[i][j]*SF_10d*SF_10d), h_i[i][j], $itor(h_i[i][j]*SF_10d*SF_10d));
+			end
+		end
+		
+		$display("H matrix: ");
+		for (i = 0; i< M*N; i= i+1) begin
+			for (j = 0; j< M*N; j= j+1) begin
+				$display("(%0d)(%0d) = %0d (%0f) + %0d (%0f)", 
+				i, j, H_r[i][j], $itor(H_r[i][j]*SF_10d*SF_10d*SF_4d), H_i[i][j], $itor(H_i[i][j]*SF_10d*SF_10d*SF_4d));
+			end
+		end
+		*/
+		
+		$display("HH matrix: ");
+		for (i = 0; i< M*N; i= i+1) begin
+			for (j = 0; j< M*N; j= j+1) begin
+				$display("(%0d)(%0d) = %0d(%0f) + i%0f", 
+				i, j, HH_r[i][j], $itor(HH_r[i][j]*SF_10d*SF_10d*SF_4d), $itor(HH_i[i][j]*SF_10d*SF_10d*SF_4d));						
+			end
+		end
+		
+		/*****************************************************************************************************/
+		
+		alpha = ls+1;
+		theta = alpha-1;
+		Q = M*N - theta;
+		
+		// LU Decomposition starts
+		for (i = 0; i< Q; i= i+1) begin
+			for (j = 0; j< Q; j = j+1) begin
+				T_r[i][j] = HH_r[i][j];
+				T_i[i][j] = HH_i[i][j];
+			end
+		end
+		
+		for (i = 0; i< Q; i= i+1) begin
+			for (j = Q; j< M*N; j = j+1) begin
+				B_r[i][j] = HH_r[i][j];
+				B_i[i][j] = HH_i[i][j];
+			end
+		end
+		B_row = 0; B_col = Q;
+		
+		for (i = Q; i< M*N; i = i+1) begin
+			for (j = 0; j< Q; j = j+1) begin
+				S_r[i][j] = HH_r[i][j];
+				S_i[i][j] = HH_i[i][j];
+			end
+		end
+		S_row = Q; S_col = 0;
+		
+		for (i = Q; i< M*N; i=i+1) begin
+			for (j=Q; j< M*N; j=j+1) begin
+				C_r[i][j] = HH_r[i][j];
+				C_i[i][j] = HH_i[i][j];
+			end
+		end
+		C_row = Q; C_col = Q;
+		
+		$display("Time: %d", $time);
+		for (kd = 0; kd< Q-1; kd=kd+1) begin
+			for (i = kd+1; i< Q; i=i+1) begin
+				// here many extra divisions are happening where kd,kd is same and i, kd is 0 --> correct it later				
+				quo_r = 0;
+				if ((T_r[i][kd] != 0 || T_i[i][kd] != 0)) begin
+					complex_divison_r(T_r[i][kd], T_i[i][kd],
+						T_r[kd][kd], T_i[kd][kd]);			
+					#300;
+					quo_r = (quo * SF_10 * SF_10) * SF_4d; // 8 Scaling by default
+				end
+				
+				quo_i = 0;
+				if ((T_r[i][kd] != 0 || T_i[i][kd] != 0)) begin
+					complex_divison_i(T_r[i][kd], T_i[i][kd],
+						T_r[kd][kd], T_i[kd][kd]);			
+					#300;
+					quo_i = (quo * SF_10 * SF_10) * SF_4d; // 8 Scaling by default
+				end
+				
+				T_r[i][kd] = quo_r;
+				T_i[i][kd] = quo_i;
+				
+				//$display("%d, %d = %d", i, kd, quo);
+				//T(kd+1:Q,kd)=T(kd+1:Q,kd)/T(kd,kd);
+			end
+			
+			if (kd + alpha > Q) begin
+				Tl = Q;
+			end else begin
+				Tl = kd+ alpha;
+			end
+			
+			for (k = kd+1; k <= Tl; k=k+1) begin
+				for (l= kd+1; l<= Tl; l=l+1) begin
+					T_r[k][l] = T_r[k][l] - ((T_r[k][kd] * SF_10d * SF_4d)*(T_r[kd][l] * SF_10d * SF_4d) 
+										- (T_i[k][kd] * SF_10d * SF_4d)*(T_i[kd][l]* SF_10d * SF_4d)) * SF_4;
+					T_i[k][l] = T_i[k][l] - ((T_r[k][kd] * SF_10d * SF_4d)*(T_i[kd][l] * SF_10d * SF_4d) 
+										+ (T_i[k][kd] * SF_10d * SF_4d)*(T_r[kd][l]* SF_10d * SF_4d)) * SF_4;
+				end
+			end
+			
+		end
+		
+		$display("Time: %d", $time);
+		
+		
+		$display("T matrix: ");
+		for (i = 0; i< Q; i= i+1) begin
+			for (j = 0; j< Q; j= j+1) begin
+				$display("(%0d)(%0d) = %0d(%0f) + i%0d(%0f)", 
+				i, j, T_r[i][j], $itor(T_r[i][j]*SF_4d*SF_10d*SF_10d),
+				T_i[i][j], $itor(T_i[i][j]*SF_10d*SF_10d*SF_4d));			
+			end
+		end
+		
+		
+		// creating identity matrix
+		// SF = 24
+		
+		for (i = 0; i< Q; i=i+1) begin
+			for (j = 0; j< Q; j=j+1) begin
+				UT_r[i][j] = 0; UT_i[i][j] = 0;
+				LT_i[i][j] = 0;
+				if (i == j)
+					LT_r[i][j]=SF_10*SF_10*SF_4;  // this is the new '1'
+				else
+					LT_r[i][j]=0;
+			end
+		end
+		
+		for (i = 0; i< Q-1; i=i+1) begin
+			for (j =i; j< Q-1; j=j+1) begin
+				LT_r[j+1][i] = T_r[j+1][i]; // 24 SF
+				LT_i[j+1][i] = T_i[j+1][i];
+				
+				UT_r[i][j+1] = T_r[i][j+1];
+				UT_i[i][j+1] = T_i[i][j+1];
+			end
+		end
+		/*
+		$display("UT matrix: ");
+		for (i = 0; i< Q; i= i+1) begin
+			for (j = 0; j< Q; j= j+1) begin
+				$display("(%0d)(%0d) = %0d(%0f) + i%0d(%0f)", 
+				i, j, UT_r[i][j], $itor(UT_r[i][j]*SF_4d*SF_10d*SF_10d),
+				UT_i[i][j], $itor(UT_i[i][j]*SF_10d*SF_10d*SF_4d));			
+			end
+		end */
+		
+		for (i = 0; i< Q; i=i+1) begin
+			for (j = 0; j< Q; j=j+1) begin
+				UTT_r[i][j] = UT_r[i][j];
+				UTT_i[i][j] = UT_i[i][j];
+				
+				if (i == j) begin
+					UTT_r[i][j] = UTT_r[i][j] + T_r[i][j]; // 24 SF
+					UTT_i[i][j] = UTT_i[i][j] + T_i[i][j];
+				end
+			end
+		end
+		
+		// Algorithm 1 - run 1
+		
+		$display("Time: %d", $time);
+		for (s = 0; s< theta; s=s+1) begin
+			
+			quo_r = 0;
+			if ((B_r[0+B_row][s+B_col] != 0 || B_i[0+B_row][s+B_col] != 0)) begin
+				complex_divison_r(B_r[0+B_row][s+B_col], B_i[0+B_row][s+B_col],
+					LT_r[0][0], LT_i[0][0]);			
+				#300;
+				quo_r = (quo * SF_10 * SF_10) * SF_4d; // 8 Scaling by default
+			end
+			
+			quo_i = 0;
+			if ((B_r[0+B_row][s+B_col] != 0 || B_i[0+B_row][s+B_col] != 0)) begin
+				complex_divison_i(B_r[0+B_row][s+B_col], B_i[0+B_row][s+B_col],
+					LT_r[0][0], LT_i[0][0]);			
+				#300;
+				quo_i = (quo * SF_10 * SF_10) * SF_4d; // 8 Scaling by default
+			end
+			
+			E_r[0][s] = quo_r;
+			E_i[0][s] = quo_i;
+			
+			/*
+			E_r[0][s] = B_r[0+B_row][s+B_col]; // assuming LT[0][0] = 1;
+			E_i[0][s] = B_i[0+B_row][s+B_col]; // eventually will have to implement complex division
+															// in case the theta becomes larger than 1
+			*/
+			
+			for (k = 1; k< theta; k=k+1) begin
+				sum_r = 0; sum_i = 0;
+				for (kk = 1; kk<= k; kk=kk+1) begin
+					sum_r= sum_r+ (LT_r[k][k-kk] * SF_10d * SF_4d)*(E_r[k-kk][s]* SF_10d * SF_4d)
+									- (LT_i[k][k-kk] * SF_10d * SF_4d)*(E_i[k-kk][s] * SF_10d * SF_4d);
+					sum_i= sum_i+ (LT_r[k][k-kk] * SF_10d * SF_4d)*(E_i[k-kk][s]* SF_10d * SF_4d)
+									+ (LT_i[k][k-kk] * SF_10d * SF_4d)*(E_r[k-kk][s] * SF_10d * SF_4d);
+				end
+				E_r[k][s] = B_r[k+B_row][s+B_col]-(sum_r * SF_4);
+				E_i[k][s] = B_i[k+B_row][s+B_col]-(sum_i * SF_4);
+				
+				quo_r = 0;
+				if ((E_r[k][s] != 0 || E_i[k][s] != 0)) begin
+					complex_divison_r(E_r[k][s], E_i[k][s],
+						LT_r[k][k], LT_i[k][k]);			
+					#300;
+					quo_r = (quo * SF_10 * SF_10) * SF_4d; // 8 Scaling by default
+				end
+				
+				quo_i = 0;
+				if ((E_r[k][s] != 0 || E_i[k][s] != 0)) begin
+					complex_divison_i(E_r[k][s], E_i[k][s],
+						LT_r[k][k], LT_i[k][k]);			
+					#300;
+					quo_i = (quo * SF_10 * SF_10) * SF_4d; // 8 Scaling by default
+				end
+				
+				E_r[k][s] = quo_r;
+				E_i[k][s] = quo_i;
+			end
+			
+			for (k = theta; k< Q; k=k+1) begin
+				sum_r = 0; sum_i = 0;
+				for (kk = 1; kk<= p-1; kk=kk+1) begin
+					sum_r= sum_r+ (LT_r[k][k-kk] * SF_10d * SF_4d)*(E_r[k-kk][s]* SF_10d * SF_4d)
+									- (LT_i[k][k-kk] * SF_10d * SF_4d)*(E_i[k-kk][s] * SF_10d * SF_4d);
+					sum_i= sum_i+ (LT_r[k][k-kk] * SF_10d * SF_4d)*(E_i[k-kk][s]* SF_10d * SF_4d)
+									+ (LT_i[k][k-kk] * SF_10d * SF_4d)*(E_r[k-kk][s] * SF_10d * SF_4d);
+				end
+				E_r[k][s] = B_r[k+B_row][s+B_col]-(sum_r * SF_4);
+				E_i[k][s] = B_i[k+B_row][s+B_col]-(sum_i * SF_4);
+				
+				quo_r = 0;
+				if ((E_r[k][s] != 0 || E_i[k][s] != 0)) begin
+					complex_divison_r(E_r[k][s], E_i[k][s],
+						LT_r[k][k], LT_i[k][k]);			
+					#300;
+					quo_r = (quo * SF_10 * SF_10) * SF_4d; // 8 Scaling by default
+				end
+				
+				quo_i = 0;
+				if ((E_r[k][s] != 0 || E_i[k][s] != 0)) begin
+					complex_divison_i(E_r[k][s], E_i[k][s],
+						LT_r[k][k], LT_i[k][k]);			
+					#300;
+					quo_i = (quo * SF_10 * SF_10) * SF_4d; // 8 Scaling by default
+				end
+				
+				E_r[k][s] = quo_r;
+				E_i[k][s] = quo_i;
+			end
+			
+		end
+		
+		
+		$display("E matrix: ");
+		for (i = 0; i< Q; i= i+1) begin
+			for (j = 0; j< Q; j= j+1) begin
+				$display("(%0d)(%0d) = %0d(%0f) + i%0d(%0f)", 
+				i, j, E_r[i][j], $itor(E_r[i][j]*SF_4d*SF_10d*SF_10d),
+				E_i[i][j], $itor(E_i[i][j]*SF_10d*SF_10d*SF_4d));			
+			end
+		end
+		
+		$display("Time: %d", $time);
+		
+		/////////////////////////////////////////////////////
+		// After the first use of algoinv 1
+		
+		for (i = 0; i< theta; i=i+1) begin
+			for (j = 0; j< Q; j=j+1) begin
+				S_herm_r[j+S_col][i+S_row] = S_r[i+S_row][j+S_col];
+				S_herm_i[j+S_col][i+S_row] = -S_i[i+S_row][j+S_col];
+			end
+		end
+		
+		for (i = 0; i< Q; i=i+1) begin
+			for (j = 0; j< Q; j=j+1) begin
+				U_herm_r[j][i] = UTT_r[i][j];
+				U_herm_i[j][i] = -UTT_i[i][j];
+			end
+		end
+		
+		// S_herm, U_herm, theta, p, q
+		// B     , LT
+		// V_herm
+		
+		///////////////////////////////////////////////////////////
+		// Algorithm 1 - run 2
+		
+		$display("Time: %d", $time);
+		for (s = 0; s< theta; s=s+1) begin
+			// here U_herm[0][0] = 0.555;
+
+			quo_r = 0;
+			if (S_herm_r[0+S_col][s+S_row] != 0 || S_herm_i[0+S_col][s+S_row] != 0) begin
+				complex_divison_r(S_herm_r[0+S_col][s+S_row], S_herm_i[0+S_col][s+S_row],
+					U_herm_r[0][0], U_herm_i[0][0]);			
+				#300;
+				quo_r = (quo * SF_10 * SF_10) * SF_4d; // 8 Scaling by default
+			end
+			
+			quo_i = 0;
+			if (S_herm_r[0+S_col][s+S_row] != 0 || S_herm_i[0+S_col][s+S_row] != 0) begin
+				complex_divison_i(S_herm_r[0+S_col][s+S_row], S_herm_i[0+S_col][s+S_row],
+					U_herm_r[0][0], U_herm_i[0][0]);			
+				#300;
+				quo_i = (quo * SF_10 * SF_10) * SF_4d; // 8 Scaling by default
+			end
+			
+			V_herm_r[0][s] = quo_r;
+			V_herm_i[0][s] = quo_i;
+						
+			//$display("%d, %d = %d", i, kd, quo);
+			//T(kd+1:Q,kd)=T(kd+1:Q,kd)/T(kd,kd);
+			
+			// eventually will have to implement complex division
+			// in case the theta becomes larger than 1
+			
+			for (k = 1; k< theta; k=k+1) begin
+				sum_r = 0; sum_i = 0;
+				for (kk = 1; kk<= k; kk=kk+1) begin
+					sum_r= sum_r+ (U_herm_r[k][k-kk] * SF_10d * SF_4d)*(V_herm_r[k-kk][s]* SF_10d * SF_4d)
+									- (U_herm_i[k][k-kk] * SF_10d * SF_4d)*(V_herm_i[k-kk][s] * SF_10d * SF_4d);
+					sum_i= sum_i+ (U_herm_r[k][k-kk] * SF_10d * SF_4d)*(V_herm_i[k-kk][s]* SF_10d * SF_4d)
+									+ (U_herm_i[k][k-kk] * SF_10d * SF_4d)*(V_herm_r[k-kk][s] * SF_10d * SF_4d);
+				end
+				V_herm_r[k][s] = S_herm_r[k+S_col][s+S_row]-(sum_r * SF_4);
+				V_herm_i[k][s] = S_herm_i[k+S_col][s+S_row]-(sum_i * SF_4);
+
+				quo_r = 0;
+				if (V_herm_r[k][s] != 0 || V_herm_i[k][s] != 0) begin
+					complex_divison_r(V_herm_r[k][s], V_herm_i[k][s],
+						U_herm_r[k][k], U_herm_i[k][k]);			
+					#300;
+					quo_r = (quo * SF_10 * SF_10) * SF_4d; // 8 Scaling by default
+				end
+				
+				quo_i = 0;
+				if (V_herm_r[k][s] != 0 || V_herm_i[k][s] != 0) begin
+					complex_divison_i(V_herm_r[k][s], V_herm_i[k][s],
+						U_herm_r[k][k], U_herm_i[k][k]);			
+					#300;
+					quo_i = (quo * SF_10 * SF_10) * SF_4d; // 8 Scaling by default
+				end
+							
+				V_herm_r[k][s] = quo_r;
+				V_herm_i[k][s] = quo_i;
+			end
+			
+			for (k = theta; k< Q; k=k+1) begin
+				sum_r = 0; sum_i = 0;
+				for (kk = 1; kk<= p-1; kk=kk+1) begin
+					sum_r= sum_r+ (U_herm_r[k][k-kk] * SF_10d * SF_4d)*(V_herm_r[k-kk][s]* SF_10d * SF_4d)
+									- (U_herm_i[k][k-kk] * SF_10d * SF_4d)*(V_herm_i[k-kk][s] * SF_10d * SF_4d);
+					sum_i= sum_i+ (U_herm_r[k][k-kk] * SF_10d * SF_4d)*(V_herm_i[k-kk][s]* SF_10d * SF_4d)
+									+ (U_herm_i[k][k-kk] * SF_10d * SF_4d)*(V_herm_r[k-kk][s] * SF_10d * SF_4d);
+				end
+				
+				V_herm_r[k][s] = S_herm_r[k+S_col][s+S_row]-(sum_r * SF_4);
+				V_herm_i[k][s] = S_herm_i[k+S_col][s+S_row]-(sum_i * SF_4);
+	
+				quo_r = 0;
+				if (V_herm_r[k][s] != 0 || V_herm_i[k][s] != 0) begin
+					complex_divison_r(V_herm_r[k][s], V_herm_i[k][s],
+						U_herm_r[k][k], U_herm_i[k][k]);			
+					#300;
+					quo_r = (quo * SF_10 * SF_10) * SF_4d; // 8 Scaling by default
+				end
+				
+				quo_i = 0;
+				if (V_herm_r[k][s] != 0 || V_herm_i[k][s] != 0) begin
+					complex_divison_i(V_herm_r[k][s], V_herm_i[k][s],
+						U_herm_r[k][k], U_herm_i[k][k]);			
+					#300;
+					quo_i = (quo * SF_10 * SF_10) * SF_4d; // 8 Scaling by default
+				end
+							
+				V_herm_r[k][s] = quo_r;
+				V_herm_i[k][s] = quo_i;
+			end
+		end
+		
+		for (i = 0; i< Q; i=i+1) begin
+			for (j = 0; j< Q; j=j+1) begin
+				V_r[j][i] = V_herm_r[i][j];
+				V_i[j][i] = -V_herm_i[i][j];
+			end
+		end
+		
+		$display("V matrix: ");
+		for (i = 0; i< M*N; i= i+1) begin
+			for (j = 0; j< M*N; j= j+1) begin
+				$display("(%0d)(%0d) = %0d(%0f) + i%0d(%0f)", 
+				i, j, V_r[i][j], $itor(V_r[i][j]*SF_4d*SF_10d*SF_10d),
+				V_i[i][j], $itor(V_i[i][j]*SF_10d*SF_10d*SF_4d));			
+			end
+		end
+		
+		$display("Time: %d", $time);
+		///////////////////////////////////////////////////////////////
+		/*******************END of ALGOINV 1 Implementations********///
+	end
+endmodule
