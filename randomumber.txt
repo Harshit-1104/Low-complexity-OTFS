@@ -1,0 +1,124 @@
+`timescale 1ns/1ps
+`define OUTLENGTH 8
+
+module PRBS_Gen (
+	input 							Clock,
+	input 							Reset,
+	output reg [`OUTLENGTH-1:0]  	LFSR  
+);
+
+
+always @(posedge Clock or negedge Reset) begin 
+	if(~Reset) begin
+		LFSR <= 0;
+	end else begin
+		LFSR <= { LFSR[`OUTLENGTH-1:0], ~(LFSR[`OUTLENGTH-1] ^ LFSR[`OUTLENGTH/2-1]) } ;
+		$display("Monitor %b",LFSR);
+
+	end
+end
+endmodule
+
+`timescale 1ns/1ps
+`define OUTLENGTH 8
+
+module PRBS_Monitor (
+	input 							Clock,
+	input 							Reset,
+	input 	 [`OUTLENGTH-1:0]		LFSR,
+	output reg						lock,
+	output reg						bit_error 							  
+);
+
+reg [`OUTLENGTH-1:0]  	LFSR_m;
+reg [`OUTLENGTH-1:0]	counter;
+
+
+
+always @(posedge Clock or negedge Reset) begin 
+	if(~Reset) begin
+		LFSR_m <= 0;
+		lock <= 0;
+		counter <= 0;
+		bit_error <= 0;
+	end else begin
+		// shift <= LFSR;
+		LFSR_m <= { LFSR[`OUTLENGTH-1:0], ~(LFSR_m[`OUTLENGTH/2-1] ^ LFSR_m[`OUTLENGTH/2-2] ^ LFSR_m[`OUTLENGTH/2-3]) } ;
+		$display("Monitor %b",LFSR_m);
+		if (LFSR_m == LFSR) begin
+			lock <=1;
+			counter <= counter + 1;
+			bit_error <= 0;
+		end
+		else begin 
+			lock <=0;
+			counter <= 0;
+			if (counter >= 3)
+				bit_error <=1;
+		end
+			
+
+	end
+end
+
+endmodule
+
+module PRBS (
+	input 			Clock_G,
+	input 			Clock_M,
+	input 			Reset,
+	output     		lock,				
+	output     		bit_error	
+);
+
+wire [`OUTLENGTH-1:0]  	LFSR_w;
+
+PRBS_Gen Gen(
+	Clock_G,
+	Reset,
+	LFSR_w
+	);
+
+PRBS_Monitor Mon(
+	Clock_M,
+	Reset,
+	LFSR_w,
+	lock,
+	bit_error
+	);
+
+endmodule
+
+module PRBS_tb ();
+
+ reg Clock_G;
+ reg Clock_M;
+ reg Reset;
+ wire lock;
+ wire bit_error;
+
+
+initial begin
+//	$monitor("Reset %b, Output %b",Reset,LFSR);
+    Clock_G = 0;
+    Clock_M = 0;
+    Reset = 0;
+    #10  
+    Reset = 1;
+    #10
+    $finish;
+  end
+  
+  always  #1  Clock_M = ~Clock_M;
+ 
+  always  #1  Clock_G = ~Clock_G;
+
+  PRBS DUT(
+  	Clock_G,
+    Clock_M,
+  	Reset,
+  	lock,
+  	bit_error
+    );
+ 
+ endmodule
